@@ -24,8 +24,11 @@ Deployment (Empfehlung für den Start, kein eigener Server nötig):
 from __future__ import annotations
 
 import json
+import os
+import smtplib
 import time
 import uuid
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
 
@@ -164,6 +167,44 @@ def _save_orders(orders: list[dict]) -> None:
     ORDERS_FILE.write_text(json.dumps(orders, indent=2, ensure_ascii=False))
 
 
+def _send_notification_email(order: dict) -> None:
+    """
+    Schickt eine E-Mail bei jeder neuen Anfrage.
+    Nötige Umgebungsvariablen (in Render unter 'Environment' eintragen):
+      GMAIL_ADDRESS       -> deine Gmail-Adresse, z.B. gruel.senel@gmail.com
+      GMAIL_APP_PASSWORD  -> ein App-Passwort (kein normales Passwort!)
+      NOTIFY_EMAIL        -> Adresse, an die die Benachrichtigung gehen soll (kann dieselbe sein)
+    Sind die Variablen nicht gesetzt, wird der Versand einfach übersprungen.
+    """
+    sender = os.environ.get("GMAIL_ADDRESS")
+    app_password = os.environ.get("GMAIL_APP_PASSWORD")
+    recipient = os.environ.get("NOTIFY_EMAIL", sender)
+
+    if not sender or not app_password:
+        return  # E-Mail-Versand nicht konfiguriert -> überspringen
+
+    msg = EmailMessage()
+    msg["Subject"] = f"Neue Anfrage von {order['name']}"
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content(
+        f"Neue individuelle Anfrage über Datengreifer:\n\n"
+        f"Name: {order['name']}\n"
+        f"E-Mail: {order['email']}\n"
+        f"Ziel-URL: {order.get('ziel_url') or '-'}\n"
+        f"Budget: {order.get('budget') or '-'}\n\n"
+        f"Beschreibung:\n{order['beschreibung']}"
+    )
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(sender, app_password)
+            smtp.send_message(msg)
+    except Exception as exc:
+        # E-Mail-Versand darf niemals die Anfrage selbst zum Scheitern bringen
+        print(f"E-Mail-Versand fehlgeschlagen: {exc}")
+
+
 @app.post("/orders", response_model=Order)
 def create_order(payload: OrderRequest):
     """Landet im Kontaktformular deiner Landingpage für Custom-Aufträge."""
@@ -171,6 +212,7 @@ def create_order(payload: OrderRequest):
     order = Order(id=str(uuid.uuid4()), erstellt_am=time.time(), **payload.model_dump())
     orders.append(order.model_dump())
     _save_orders(orders)
+    _send_notification_email(order.model_dump())
     return order
 
 
