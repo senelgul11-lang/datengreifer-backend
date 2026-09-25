@@ -25,10 +25,8 @@ from __future__ import annotations
 
 import json
 import os
-import smtplib
 import time
 import uuid
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
 
@@ -169,25 +167,24 @@ def _save_orders(orders: list[dict]) -> None:
 
 def _send_notification_email(order: dict) -> None:
     """
-    Schickt eine E-Mail bei jeder neuen Anfrage.
-    Nötige Umgebungsvariablen (in Render unter 'Environment' eintragen):
-      GMAIL_ADDRESS       -> deine Gmail-Adresse, z.B. gruel.senel@gmail.com
-      GMAIL_APP_PASSWORD  -> ein App-Passwort (kein normales Passwort!)
-      NOTIFY_EMAIL        -> Adresse, an die die Benachrichtigung gehen soll (kann dieselbe sein)
-    Sind die Variablen nicht gesetzt, wird der Versand einfach übersprungen.
-    """
-    sender = os.environ.get("GMAIL_ADDRESS")
-    app_password = os.environ.get("GMAIL_APP_PASSWORD")
-    recipient = os.environ.get("NOTIFY_EMAIL", sender)
+    Schickt eine E-Mail bei jeder neuen Anfrage - über die Resend-API
+    (normale Web-Anfrage, kein SMTP -> läuft zuverlässig auf Render).
 
-    if not sender or not app_password:
+    Nötige Umgebungsvariable (in Render unter 'Environment' eintragen):
+      RESEND_API_KEY  -> API-Key von resend.com (kostenloses Konto)
+      NOTIFY_EMAIL    -> Adresse, an die die Benachrichtigung gehen soll
+                         (im kostenlosen Resend-Testmodus: die E-Mail-Adresse,
+                         mit der du dich bei Resend registriert hast)
+
+    Ist RESEND_API_KEY nicht gesetzt, wird der Versand einfach übersprungen.
+    """
+    api_key = os.environ.get("RESEND_API_KEY")
+    recipient = os.environ.get("NOTIFY_EMAIL")
+
+    if not api_key or not recipient:
         return  # E-Mail-Versand nicht konfiguriert -> überspringen
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Neue Anfrage von {order['name']}"
-    msg["From"] = sender
-    msg["To"] = recipient
-    msg.set_content(
+    body_text = (
         f"Neue individuelle Anfrage über Datengreifer:\n\n"
         f"Name: {order['name']}\n"
         f"E-Mail: {order['email']}\n"
@@ -197,10 +194,23 @@ def _send_notification_email(order: dict) -> None:
     )
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(sender, app_password)
-            smtp.send_message(msg)
-    except Exception as exc:
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": "Datengreifer <onboarding@resend.dev>",
+                "to": [recipient],
+                "subject": f"Neue Anfrage von {order['name']}",
+                "text": body_text,
+            },
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            print(f"E-Mail-Versand fehlgeschlagen: {resp.status_code} {resp.text}")
+    except requests.RequestException as exc:
         # E-Mail-Versand darf niemals die Anfrage selbst zum Scheitern bringen
         print(f"E-Mail-Versand fehlgeschlagen: {exc}")
 
